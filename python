@@ -1,0 +1,521 @@
+#!/usr/bin/env python3
+"""
+habit_tracker.py - Трекер привычек на Python (CLI + Tkinter GUI)
+Поддерживает: добавление, отметка, статистика, сохранение в JSON.
+"""
+import argparse
+import sys
+import json
+import os
+from datetime import datetime, date, timedelta
+from typing import List, Dict, Optional, Tuple
+from dataclasses import dataclass, asdict, field
+
+try:
+    import tkinter as tk
+    from tkinter import ttk, filedialog, messagebox, scrolledtext
+    GUI_AVAILABLE = True
+except ImportError:
+    GUI_AVAILABLE = False
+
+DATA_FILE = "habits.json"
+
+@dataclass
+class Habit:
+    id: int
+    name: str
+    description: str
+    frequency: str          # daily, weekly, monthly
+    created: str            # YYYY-MM-DD
+    history: List[str] = field(default_factory=list)  # даты выполнений в формате YYYY-MM-DD
+
+class HabitTracker:
+    def __init__(self, data_file=DATA_FILE):
+        self.data_file = data_file
+        self.habits: List[Habit] = []
+        self.next_id = 1
+        self.load()
+
+    def load(self):
+        if os.path.exists(self.data_file):
+            try:
+                with open(self.data_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    self.habits = [Habit(**h) for h in data]
+                    self.next_id = max([h.id for h in self.habits], default=0) + 1
+            except:
+                self.habits = []
+                self.next_id = 1
+        else:
+            self.habits = []
+            self.next_id = 1
+
+    def save(self):
+        with open(self.data_file, 'w', encoding='utf-8') as f:
+            json.dump([asdict(h) for h in self.habits], f, indent=2, ensure_ascii=False)
+
+    def add_habit(self, name: str, description: str, frequency: str) -> Habit:
+        h = Habit(
+            id=self.next_id,
+            name=name,
+            description=description,
+            frequency=frequency,
+            created=date.today().isoformat(),
+            history=[]
+        )
+        self.habits.append(h)
+        self.next_id += 1
+        self.save()
+        return h
+
+    def edit_habit(self, habit_id: int, name: str = None, description: str = None, frequency: str = None) -> bool:
+        for h in self.habits:
+            if h.id == habit_id:
+                if name is not None: h.name = name
+                if description is not None: h.description = description
+                if frequency is not None: h.frequency = frequency
+                self.save()
+                return True
+        return False
+
+    def delete_habit(self, habit_id: int) -> bool:
+        for i, h in enumerate(self.habits):
+            if h.id == habit_id:
+                del self.habits[i]
+                self.save()
+                return True
+        return False
+
+    def check_habit(self, habit_id: int, date_str: str = None) -> bool:
+        if date_str is None:
+            date_str = date.today().isoformat()
+        for h in self.habits:
+            if h.id == habit_id:
+                if date_str not in h.history:
+                    h.history.append(date_str)
+                    self.save()
+                    return True
+                return False  # уже отмечена
+        return False
+
+    def uncheck_habit(self, habit_id: int, date_str: str = None) -> bool:
+        if date_str is None:
+            date_str = date.today().isoformat()
+        for h in self.habits:
+            if h.id == habit_id:
+                if date_str in h.history:
+                    h.history.remove(date_str)
+                    self.save()
+                    return True
+                return False
+        return False
+
+    def get_habits(self) -> List[Habit]:
+        return self.habits
+
+    def get_habit_stats(self, habit: Habit) -> Dict:
+        today = date.today()
+        # количество выполнений всего
+        total = len(habit.history)
+        # за последние 7 дней
+        week_ago = today - timedelta(days=7)
+        last_week = [d for d in habit.history if d >= week_ago.isoformat()]
+        week_count = len(last_week)
+        # ожидаемое количество за неделю (в зависимости от частоты)
+        if habit.frequency == 'daily':
+            expected = 7
+        elif habit.frequency == 'weekly':
+            expected = 1
+        elif habit.frequency == 'monthly':
+            expected = 1  # упрощённо
+        else:
+            expected = 7
+        week_percent = (week_count / expected * 100) if expected > 0 else 0
+        # Streak (непрерывная цепочка)
+        streak = 0
+        check_date = today
+        while True:
+            date_str = check_date.isoformat()
+            if date_str in habit.history:
+                streak += 1
+                check_date -= timedelta(days=1)
+            else:
+                break
+        return {
+            'total': total,
+            'week_count': week_count,
+            'week_percent': week_percent,
+            'streak': streak,
+            'last_check': habit.history[-1] if habit.history else None
+        }
+
+# ========== CLI ==========
+def cli():
+    parser = argparse.ArgumentParser(description="Трекер привычек")
+    subparsers = parser.add_subparsers(dest="command", help="Команды")
+
+    # add
+    add_parser = subparsers.add_parser("add", help="Добавить привычку")
+    add_parser.add_argument("name", help="Название")
+    add_parser.add_argument("--description", "-d", default="", help="Описание")
+    add_parser.add_argument("--frequency", "-f", choices=['daily','weekly','monthly'], default='daily', help="Периодичность")
+
+    # list
+    list_parser = subparsers.add_parser("list", help="Показать привычки")
+
+    # check
+    check_parser = subparsers.add_parser("check", help="Отметить выполнение")
+    check_parser.add_argument("id", type=int, help="ID привычки")
+    check_parser.add_argument("--date", help="Дата (ГГГГ-ММ-ДД)")
+
+    # uncheck
+    uncheck_parser = subparsers.add_parser("uncheck", help="Отменить выполнение")
+    uncheck_parser.add_argument("id", type=int, help="ID привычки")
+    uncheck_parser.add_argument("--date", help="Дата (ГГГГ-ММ-ДД)")
+
+    # stats
+    stats_parser = subparsers.add_parser("stats", help="Статистика по привычке")
+    stats_parser.add_argument("id", type=int, help="ID привычки")
+
+    # delete
+    delete_parser = subparsers.add_parser("delete", help="Удалить привычку")
+    delete_parser.add_argument("id", type=int, help="ID привычки")
+
+    # edit
+    edit_parser = subparsers.add_parser("edit", help="Редактировать привычку")
+    edit_parser.add_argument("id", type=int, help="ID привычки")
+    edit_parser.add_argument("--name", help="Новое название")
+    edit_parser.add_argument("--description", help="Новое описание")
+    edit_parser.add_argument("--frequency", choices=['daily','weekly','monthly'], help="Новая периодичность")
+
+    # interactive mode
+    parser.add_argument("--gui", action="store_true", help="Запустить GUI")
+    args = parser.parse_args()
+
+    if args.gui and GUI_AVAILABLE:
+        root = tk.Tk()
+        app = HabitTrackerGUI(root)
+        root.mainloop()
+        return
+
+    tracker = HabitTracker()
+    if args.command == "add":
+        h = tracker.add_habit(args.name, args.description, args.frequency)
+        print(f"✅ Привычка #{h.id} '{h.name}' добавлена")
+    elif args.command == "list":
+        habits = tracker.get_habits()
+        if not habits:
+            print("Нет привычек.")
+        else:
+            today_str = date.today().isoformat()
+            print(f"{'ID':<4} {'Название':<20} {'Частота':<10} {'Выполнена сегодня':<18}")
+            for h in habits:
+                done = "✅" if today_str in h.history else "❌"
+                print(f"{h.id:<4} {h.name[:20]:<20} {h.frequency:<10} {done}")
+    elif args.command == "check":
+        if tracker.check_habit(args.id, args.date):
+            print(f"✅ Привычка #{args.id} отмечена выполнена")
+        else:
+            print(f"❌ Не удалось отметить (возможно, уже отмечена или привычка не найдена)")
+    elif args.command == "uncheck":
+        if tracker.uncheck_habit(args.id, args.date):
+            print(f"✅ Отметка для привычки #{args.id} снята")
+        else:
+            print(f"❌ Не удалось снять отметку")
+    elif args.command == "stats":
+        habits = tracker.get_habits()
+        h = next((h for h in habits if h.id == args.id), None)
+        if h:
+            stats = tracker.get_habit_stats(h)
+            print(f"📊 Статистика для '{h.name}':")
+            print(f"  Всего выполнений: {stats['total']}")
+            print(f"  За последние 7 дней: {stats['week_count']} ({(stats['week_percent']):.1f}%)")
+            print(f"  Текущая серия (streak): {stats['streak']} дней")
+            print(f"  Последнее выполнение: {stats['last_check'] or 'никогда'}")
+        else:
+            print("Привычка не найдена")
+    elif args.command == "delete":
+        if tracker.delete_habit(args.id):
+            print(f"✅ Привычка #{args.id} удалена")
+        else:
+            print(f"❌ Привычка не найдена")
+    elif args.command == "edit":
+        if tracker.edit_habit(args.id, args.name, args.description, args.frequency):
+            print(f"✅ Привычка #{args.id} обновлена")
+        else:
+            print(f"❌ Привычка не найдена")
+    else:
+        interactive_mode(tracker)
+
+def interactive_mode(tracker):
+    while True:
+        print("\n🌱 Трекер привычек (интерактивный)")
+        print("1. Добавить привычку")
+        print("2. Список привычек")
+        print("3. Отметить выполнение")
+        print("4. Отменить выполнение")
+        print("5. Статистика")
+        print("6. Редактировать")
+        print("7. Удалить")
+        print("0. Выход")
+        choice = input("Выберите действие: ").strip()
+        if choice == "0":
+            break
+        elif choice == "1":
+            name = input("Название: ").strip()
+            if not name:
+                print("Название обязательно")
+                continue
+            desc = input("Описание (необязательно): ").strip()
+            freq = input("Частота (daily/weekly/monthly, по умолчанию daily): ").strip()
+            if freq not in ['daily','weekly','monthly']:
+                freq = 'daily'
+            h = tracker.add_habit(name, desc, freq)
+            print(f"✅ Привычка #{h.id} '{h.name}' добавлена")
+        elif choice == "2":
+            habits = tracker.get_habits()
+            if not habits:
+                print("Нет привычек.")
+            else:
+                today_str = date.today().isoformat()
+                print(f"{'ID':<4} {'Название':<20} {'Частота':<10} {'Выполнена сегодня':<18}")
+                for h in habits:
+                    done = "✅" if today_str in h.history else "❌"
+                    print(f"{h.id:<4} {h.name[:20]:<20} {h.frequency:<10} {done}")
+        elif choice == "3":
+            try:
+                hid = int(input("ID привычки: ").strip())
+            except:
+                print("Неверный ID")
+                continue
+            if tracker.check_habit(hid):
+                print(f"✅ Привычка #{hid} отмечена выполнена")
+            else:
+                print(f"❌ Не удалось отметить")
+        elif choice == "4":
+            try:
+                hid = int(input("ID привычки: ").strip())
+            except:
+                print("Неверный ID")
+                continue
+            if tracker.uncheck_habit(hid):
+                print(f"✅ Отметка снята")
+            else:
+                print(f"❌ Не удалось снять отметку")
+        elif choice == "5":
+            try:
+                hid = int(input("ID привычки: ").strip())
+            except:
+                print("Неверный ID")
+                continue
+            habits = tracker.get_habits()
+            h = next((h for h in habits if h.id == hid), None)
+            if h:
+                stats = tracker.get_habit_stats(h)
+                print(f"📊 Статистика для '{h.name}':")
+                print(f"  Всего выполнений: {stats['total']}")
+                print(f"  За последние 7 дней: {stats['week_count']} ({(stats['week_percent']):.1f}%)")
+                print(f"  Текущая серия (streak): {stats['streak']} дней")
+                print(f"  Последнее выполнение: {stats['last_check'] or 'никогда'}")
+            else:
+                print("Привычка не найдена")
+        elif choice == "6":
+            try:
+                hid = int(input("ID привычки: ").strip())
+            except:
+                print("Неверный ID")
+                continue
+            habits = tracker.get_habits()
+            h = next((h for h in habits if h.id == hid), None)
+            if not h:
+                print("Привычка не найдена")
+                continue
+            print("Оставьте пустым, чтобы не менять.")
+            new_name = input(f"Название ({h.name}): ").strip()
+            new_desc = input(f"Описание ({h.description}): ").strip()
+            new_freq = input(f"Частота ({h.frequency}): ").strip()
+            if not new_freq:
+                new_freq = None
+            if tracker.edit_habit(hid, new_name or None, new_desc or None, new_freq):
+                print("✅ Обновлено")
+            else:
+                print("❌ Ошибка")
+        elif choice == "7":
+            try:
+                hid = int(input("ID для удаления: ").strip())
+            except:
+                print("Неверный ID")
+                continue
+            if tracker.delete_habit(hid):
+                print("✅ Удалено")
+            else:
+                print("❌ Не найдено")
+        else:
+            print("Неверный выбор")
+
+# ========== GUI ==========
+if GUI_AVAILABLE:
+    class HabitTrackerGUI:
+        def __init__(self, root):
+            self.root = root
+            self.root.title("🌱 Трекер привычек")
+            self.root.geometry("750x600")
+            self.root.resizable(True, True)
+            self.tracker = HabitTracker()
+            self.create_widgets()
+            self.refresh_list()
+
+        def create_widgets(self):
+            main = ttk.Frame(self.root, padding="10")
+            main.pack(fill=tk.BOTH, expand=True)
+
+            # Верхняя панель: добавление
+            add_frame = ttk.LabelFrame(main, text="Добавить привычку")
+            add_frame.pack(fill=tk.X, pady=5)
+            grid = ttk.Frame(add_frame)
+            grid.pack(pady=5, padx=5)
+            ttk.Label(grid, text="Название:").grid(row=0, column=0, sticky="w")
+            self.name_entry = ttk.Entry(grid, width=20)
+            self.name_entry.grid(row=0, column=1, padx=5)
+            ttk.Label(grid, text="Описание:").grid(row=0, column=2, sticky="w")
+            self.desc_entry = ttk.Entry(grid, width=25)
+            self.desc_entry.grid(row=0, column=3, padx=5)
+            ttk.Label(grid, text="Частота:").grid(row=0, column=4, sticky="w")
+            self.freq_combo = ttk.Combobox(grid, values=['daily','weekly','monthly'], state="readonly", width=8)
+            self.freq_combo.set('daily')
+            self.freq_combo.grid(row=0, column=5, padx=5)
+            ttk.Button(grid, text="➕ Добавить", command=self.add_habit).grid(row=0, column=6, padx=5)
+
+            # Список привычек
+            list_frame = ttk.LabelFrame(main, text="Список привычек")
+            list_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+            self.tree = ttk.Treeview(list_frame, columns=("id", "name", "freq", "done_today", "streak"), show="headings")
+            self.tree.heading("id", text="ID")
+            self.tree.heading("name", text="Название")
+            self.tree.heading("freq", text="Частота")
+            self.tree.heading("done_today", text="Сегодня")
+            self.tree.heading("streak", text="Streak")
+            self.tree.column("id", width=40)
+            self.tree.column("name", width=200)
+            self.tree.column("freq", width=80)
+            self.tree.column("done_today", width=80)
+            self.tree.column("streak", width=60)
+            scroll = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.tree.yview)
+            self.tree.configure(yscrollcommand=scroll.set)
+            self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+            # Нижняя панель: кнопки
+            bottom = ttk.Frame(main)
+            bottom.pack(fill=tk.X, pady=5)
+            ttk.Button(bottom, text="✅ Отметить выполнение", command=self.check_habit).pack(side=tk.LEFT, padx=5)
+            ttk.Button(bottom, text="❌ Отменить", command=self.uncheck_habit).pack(side=tk.LEFT, padx=5)
+            ttk.Button(bottom, text="📊 Статистика", command=self.show_stats).pack(side=tk.LEFT, padx=5)
+            ttk.Button(bottom, text="✏️ Редактировать", command=self.edit_habit).pack(side=tk.LEFT, padx=5)
+            ttk.Button(bottom, text="🗑 Удалить", command=self.delete_habit).pack(side=tk.LEFT, padx=5)
+
+        def refresh_list(self):
+            self.tree.delete(*self.tree.get_children())
+            habits = self.tracker.get_habits()
+            today_str = date.today().isoformat()
+            for h in habits:
+                done = "✅" if today_str in h.history else "❌"
+                stats = self.tracker.get_habit_stats(h)
+                self.tree.insert("", tk.END, values=(h.id, h.name, h.frequency, done, stats['streak']))
+
+        def add_habit(self):
+            name = self.name_entry.get().strip()
+            if not name:
+                messagebox.showerror("Ошибка", "Название обязательно")
+                return
+            desc = self.desc_entry.get().strip()
+            freq = self.freq_combo.get()
+            self.tracker.add_habit(name, desc, freq)
+            self.name_entry.delete(0, tk.END)
+            self.desc_entry.delete(0, tk.END)
+            self.refresh_list()
+
+        def get_selected_id(self):
+            selected = self.tree.selection()
+            if not selected:
+                messagebox.showwarning("Выберите привычку")
+                return None
+            return int(self.tree.item(selected[0])['values'][0])
+
+        def check_habit(self):
+            hid = self.get_selected_id()
+            if hid is not None:
+                if self.tracker.check_habit(hid):
+                    self.refresh_list()
+                else:
+                    messagebox.showinfo("Инфо", "Уже отмечена или ошибка")
+
+        def uncheck_habit(self):
+            hid = self.get_selected_id()
+            if hid is not None:
+                if self.tracker.uncheck_habit(hid):
+                    self.refresh_list()
+                else:
+                    messagebox.showinfo("Инфо", "Не отмечена или ошибка")
+
+        def show_stats(self):
+            hid = self.get_selected_id()
+            if hid is None:
+                return
+            habits = self.tracker.get_habits()
+            h = next((h for h in habits if h.id == hid), None)
+            if h:
+                stats = self.tracker.get_habit_stats(h)
+                msg = f"📊 Статистика для '{h.name}':\n\n"
+                msg += f"Всего выполнений: {stats['total']}\n"
+                msg += f"За последние 7 дней: {stats['week_count']} ({stats['week_percent']:.1f}%)\n"
+                msg += f"Текущая серия (streak): {stats['streak']} дней\n"
+                msg += f"Последнее выполнение: {stats['last_check'] or 'никогда'}"
+                messagebox.showinfo("Статистика", msg)
+
+        def edit_habit(self):
+            hid = self.get_selected_id()
+            if hid is None:
+                return
+            habits = self.tracker.get_habits()
+            h = next((h for h in habits if h.id == hid), None)
+            if not h:
+                return
+            dialog = tk.Toplevel(self.root)
+            dialog.title("Редактировать привычку")
+            dialog.geometry("400x250")
+            tk.Label(dialog, text="Название:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
+            name_ent = tk.Entry(dialog)
+            name_ent.insert(0, h.name)
+            name_ent.grid(row=0, column=1, padx=5, pady=5)
+            tk.Label(dialog, text="Описание:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
+            desc_ent = tk.Entry(dialog)
+            desc_ent.insert(0, h.description)
+            desc_ent.grid(row=1, column=1, padx=5, pady=5)
+            tk.Label(dialog, text="Частота:").grid(row=2, column=0, padx=5, pady=5, sticky="w")
+            freq_combo = ttk.Combobox(dialog, values=['daily','weekly','monthly'], state="readonly")
+            freq_combo.set(h.frequency)
+            freq_combo.grid(row=2, column=1, padx=5, pady=5)
+            def save():
+                name = name_ent.get().strip()
+                desc = desc_ent.get().strip()
+                freq = freq_combo.get()
+                if not name:
+                    messagebox.showerror("Ошибка", "Название обязательно")
+                    return
+                if self.tracker.edit_habit(hid, name, desc, freq):
+                    self.refresh_list()
+                    dialog.destroy()
+                else:
+                    messagebox.showerror("Ошибка", "Не удалось обновить")
+            tk.Button(dialog, text="Сохранить", command=save).grid(row=3, column=0, columnspan=2, pady=10)
+
+        def delete_habit(self):
+            hid = self.get_selected_id()
+            if hid is not None:
+                if messagebox.askyesno("Удаление", f"Удалить привычку #{hid}?"):
+                    if self.tracker.delete_habit(hid):
+                        self.refresh_list()
+
+if __name__ == "__main__":
+    cli()
